@@ -36,13 +36,13 @@ require (
 	github.com/prometheus/client_model v0.0.0-20170216185247-6f3806018612
 	github.com/prometheus/common v0.0.0-20180518154759-7600349dcfe1 // indirect
 	github.com/prometheus/procfs v0.0.0-20180612222113-7d6f385de8be // indirect
+	github.com/retailnext/ugorjigo v0.0.0-20180407100733-b4c50a2b199d
 	github.com/sirupsen/logrus v1.0.5 // indirect
 	github.com/soheilhy/cmux v0.1.4
 	github.com/spf13/cobra v0.0.3
 	github.com/spf13/pflag v1.0.1
 	github.com/stretchr/testify v1.2.2 // indirect
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20170815181823-89b8d40f7ca8
-	github.com/ugorji/go v1.1.1
 	github.com/urfave/cli v1.18.0
 	github.com/xiang90/probing v0.0.0-20160813154853-07dd2e8dfe18
 	go.etcd.io/bbolt v1.3.1-etcd.7

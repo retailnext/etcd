@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	codec1978 "github.com/ugorji/go/codec"
+	codec1978 "github.com/retailnext/ugorjigo/codec"
 )
 
 const (

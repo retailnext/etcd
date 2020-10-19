@@ -27,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ugorji/go/codec"
+	"github.com/retailnext/ugorjigo/codec"
 	"go.etcd.io/etcd/pkg/pathutil"
 )
 
