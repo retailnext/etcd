@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,18 +15,17 @@
 package etcdserver
 
 import (
-	"log"
-	"os"
-	"path"
+	"io"
 
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/migrate"
-	"github.com/coreos/etcd/pkg/pbutil"
-	"github.com/coreos/etcd/pkg/types"
-	"github.com/coreos/etcd/raft/raftpb"
-	"github.com/coreos/etcd/snap"
-	"github.com/coreos/etcd/wal"
-	"github.com/coreos/etcd/wal/walpb"
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/pkg/v3/pbutil"
+	"go.etcd.io/etcd/pkg/v3/types"
+	"go.etcd.io/etcd/v3/etcdserver/api/snap"
+	"go.etcd.io/etcd/v3/raft/raftpb"
+	"go.etcd.io/etcd/v3/wal"
+	"go.etcd.io/etcd/v3/wal/walpb"
+
+	"go.uber.org/zap"
 )
 
 type Storage interface {
@@ -37,6 +36,10 @@ type Storage interface {
 	SaveSnap(snap raftpb.Snapshot) error
 	// Close closes the Storage and performs finalization.
 	Close() error
+	// Release releases the locked wal files older than the provided snapshot.
+	Release(snap raftpb.Snapshot) error
+	// Sync WAL
+	Sync() error
 }
 
 type storage struct {
@@ -48,87 +51,70 @@ func NewStorage(w *wal.WAL, s *snap.Snapshotter) Storage {
 	return &storage{w, s}
 }
 
-// SaveSnap saves the snapshot to disk and release the locked
-// wal files since they will not be used.
+// SaveSnap saves the snapshot file to disk and writes the WAL snapshot entry.
 func (st *storage) SaveSnap(snap raftpb.Snapshot) error {
-	err := st.Snapshotter.SaveSnap(snap)
-	if err != nil {
-		return err
-	}
 	walsnap := walpb.Snapshot{
 		Index: snap.Metadata.Index,
 		Term:  snap.Metadata.Term,
 	}
-	err = st.WAL.SaveSnapshot(walsnap)
+	// save the snapshot file before writing the snapshot to the wal.
+	// This makes it possible for the snapshot file to become orphaned, but prevents
+	// a WAL snapshot entry from having no corresponding snapshot file.
+	err := st.Snapshotter.SaveSnap(snap)
 	if err != nil {
 		return err
 	}
-	err = st.WAL.ReleaseLockTo(snap.Metadata.Index)
-	if err != nil {
-		return err
-	}
-	return nil
+	// gofail: var raftBeforeWALSaveSnaphot struct{}
+
+	return st.WAL.SaveSnapshot(walsnap)
 }
 
-func readWAL(waldir string, snap walpb.Snapshot) (w *wal.WAL, id, cid types.ID, st raftpb.HardState, ents []raftpb.Entry) {
-	var err error
-	if w, err = wal.Open(waldir, snap); err != nil {
-		log.Fatalf("etcdserver: open wal error: %v", err)
+// Release releases resources older than the given snap and are no longer needed:
+// - releases the locks to the wal files that are older than the provided wal for the given snap.
+// - deletes any .snap.db files that are older than the given snap.
+func (st *storage) Release(snap raftpb.Snapshot) error {
+	if err := st.WAL.ReleaseLockTo(snap.Metadata.Index); err != nil {
+		return err
 	}
-	var wmetadata []byte
-	if wmetadata, st, ents, err = w.ReadAll(); err != nil {
-		log.Fatalf("etcdserver: read wal error: %v", err)
+	return st.Snapshotter.ReleaseSnapDBs(snap)
+}
+
+// readWAL reads the WAL at the given snap and returns the wal, its latest HardState and cluster ID, and all entries that appear
+// after the position of the given snap in the WAL.
+// The snap must have been previously saved to the WAL, or this call will panic.
+func readWAL(lg *zap.Logger, waldir string, snap walpb.Snapshot, unsafeNoFsync bool) (w *wal.WAL, id, cid types.ID, st raftpb.HardState, ents []raftpb.Entry) {
+	var (
+		err       error
+		wmetadata []byte
+	)
+
+	repaired := false
+	for {
+		if w, err = wal.Open(lg, waldir, snap); err != nil {
+			lg.Fatal("failed to open WAL", zap.Error(err))
+		}
+		if unsafeNoFsync {
+			w.SetUnsafeNoFsync()
+		}
+		if wmetadata, st, ents, err = w.ReadAll(); err != nil {
+			w.Close()
+			// we can only repair ErrUnexpectedEOF and we never repair twice.
+			if repaired || err != io.ErrUnexpectedEOF {
+				lg.Fatal("failed to read WAL, cannot be repaired", zap.Error(err))
+			}
+			if !wal.Repair(lg, waldir) {
+				lg.Fatal("failed to repair WAL", zap.Error(err))
+			} else {
+				lg.Info("repaired WAL", zap.Error(err))
+				repaired = true
+			}
+			continue
+		}
+		break
 	}
 	var metadata pb.Metadata
 	pbutil.MustUnmarshal(&metadata, wmetadata)
 	id = types.ID(metadata.NodeID)
 	cid = types.ID(metadata.ClusterID)
-	return
-}
-
-// upgradeWAL converts an older version of the etcdServer data to the newest version.
-// It must ensure that, after upgrading, the most recent version is present.
-func upgradeWAL(baseDataDir string, name string, ver wal.WalVersion) error {
-	switch ver {
-	case wal.WALv0_4:
-		log.Print("etcdserver: converting v0.4 log to v2.0")
-		err := migrate.Migrate4To2(baseDataDir, name)
-		if err != nil {
-			log.Fatalf("etcdserver: failed migrating data-dir: %v", err)
-			return err
-		}
-		fallthrough
-	case wal.WALv2_0:
-		err := makeMemberDir(baseDataDir)
-		if err != nil {
-			return err
-		}
-		fallthrough
-	case wal.WALv2_0_1:
-		fallthrough
-	default:
-		log.Printf("datadir is valid for the 2.0.1 format")
-	}
-	return nil
-}
-
-func makeMemberDir(dir string) error {
-	membdir := path.Join(dir, "member")
-	_, err := os.Stat(membdir)
-	switch {
-	case err == nil:
-		return nil
-	case !os.IsNotExist(err):
-		return err
-	}
-	if err := os.MkdirAll(membdir, 0700); err != nil {
-		return err
-	}
-	names := []string{"snap", "wal"}
-	for _, name := range names {
-		if err := os.Rename(path.Join(dir, name), path.Join(membdir, name)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return w, id, cid, st, ents
 }

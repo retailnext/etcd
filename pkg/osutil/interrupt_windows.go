@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,11 @@
 
 package osutil
 
-import "os"
+import (
+	"os"
+
+	"go.uber.org/zap"
+)
 
 type InterruptHandler func()
 
@@ -24,7 +28,7 @@ type InterruptHandler func()
 func RegisterInterruptHandler(h InterruptHandler) {}
 
 // HandleInterrupts is a no-op on windows
-func HandleInterrupts() {}
+func HandleInterrupts(*zap.Logger) {}
 
 // Exit calls os.Exit
 func Exit(code int) {

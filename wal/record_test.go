@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,13 +16,14 @@ package wal
 
 import (
 	"bytes"
+	"errors"
 	"hash/crc32"
 	"io"
 	"io/ioutil"
 	"reflect"
 	"testing"
 
-	"github.com/coreos/etcd/wal/walpb"
+	"go.etcd.io/etcd/v3/wal/walpb"
 )
 
 var (
@@ -42,6 +43,7 @@ func TestReadRecord(t *testing.T) {
 	}{
 		{infoRecord, &walpb.Record{Type: 1, Crc: crc32.Checksum(infoData, crcTable), Data: infoData}, nil},
 		{[]byte(""), &walpb.Record{}, io.EOF},
+		{infoRecord[:8], &walpb.Record{}, io.ErrUnexpectedEOF},
 		{infoRecord[:len(infoRecord)-len(infoData)-8], &walpb.Record{}, io.ErrUnexpectedEOF},
 		{infoRecord[:len(infoRecord)-len(infoData)], &walpb.Record{}, io.ErrUnexpectedEOF},
 		{infoRecord[:len(infoRecord)-8], &walpb.Record{}, io.ErrUnexpectedEOF},
@@ -56,7 +58,7 @@ func TestReadRecord(t *testing.T) {
 		if !reflect.DeepEqual(rec, tt.wr) {
 			t.Errorf("#%d: block = %v, want %v", i, rec, tt.wr)
 		}
-		if !reflect.DeepEqual(e, tt.we) {
+		if !errors.Is(e, tt.we) {
 			t.Errorf("#%d: err = %v, want %v", i, e, tt.we)
 		}
 		rec = &walpb.Record{}
@@ -68,7 +70,7 @@ func TestWriteRecord(t *testing.T) {
 	typ := int64(0xABCD)
 	d := []byte("Hello world!")
 	buf := new(bytes.Buffer)
-	e := newEncoder(buf, 0)
+	e := newEncoder(buf, 0, 0)
 	e.encode(&walpb.Record{Type: typ, Data: d})
 	e.flush()
 	decoder := newDecoder(ioutil.NopCloser(buf))

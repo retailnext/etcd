@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,7 @@
 
 package types
 
-import (
-	"strconv"
-)
+import "strconv"
 
 // ID represents a generic identifier which is canonically
 // stored as a uint64 but is typically represented as a

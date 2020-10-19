@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/coreos/etcd/raft/raftpb"
+	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/v3/raft/raftpb"
 )
 
 func BenchmarkWrite100EntryWithoutBatch(b *testing.B) { benchmarkWriteEntry(b, 100, 0) }
@@ -41,18 +43,19 @@ func benchmarkWriteEntry(b *testing.B, size int, batch int) {
 	}
 	defer os.RemoveAll(p)
 
-	w, err := Create(p, []byte("somedata"))
+	w, err := Create(zap.NewExample(), p, []byte("somedata"))
 	if err != nil {
 		b.Fatalf("err = %v, want nil", err)
 	}
 	data := make([]byte, size)
-	for i := 0; i < len(data); i++ {
+	for i := 0; i < size; i++ {
 		data[i] = byte(i)
 	}
 	e := &raftpb.Entry{Data: data}
 
 	b.ResetTimer()
 	n := 0
+	b.SetBytes(int64(e.Size()))
 	for i := 0; i < b.N; i++ {
 		err := w.saveEntry(e)
 		if err != nil {

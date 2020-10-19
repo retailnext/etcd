@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,20 +14,29 @@
 
 package wal
 
-import "github.com/coreos/etcd/Godeps/_workspace/src/github.com/prometheus/client_golang/prometheus"
+import "github.com/prometheus/client_golang/prometheus"
 
 var (
-	syncDurations = prometheus.NewSummary(prometheus.SummaryOpts{
-		Name: "wal_fsync_durations_microseconds",
-		Help: "The latency distributions of fsync called by wal.",
+	walFsyncSec = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "etcd",
+		Subsystem: "disk",
+		Name:      "wal_fsync_duration_seconds",
+		Help:      "The latency distributions of fsync called by WAL.",
+
+		// lowest bucket start of upper bound 0.001 sec (1 ms) with factor 2
+		// highest bucket start of 0.001 sec * 2^13 == 8.192 sec
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 	})
-	lastIndexSaved = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "wal_last_index_saved",
-		Help: "The index of the last entry saved by wal",
+
+	walWriteBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "etcd",
+		Subsystem: "disk",
+		Name:      "wal_write_bytes_total",
+		Help:      "Total number of bytes written in WAL.",
 	})
 )
 
 func init() {
-	prometheus.MustRegister(syncDurations)
-	prometheus.MustRegister(lastIndexSaved)
+	prometheus.MustRegister(walFsyncSec)
+	prometheus.MustRegister(walWriteBytes)
 }

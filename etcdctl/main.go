@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2016 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,48 +12,59 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// etcdctl is a command line application that controls etcd.
 package main
 
 import (
+	"fmt"
 	"os"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/codegangsta/cli"
-	"github.com/coreos/etcd/etcdctl/command"
-	"github.com/coreos/etcd/version"
+	"go.etcd.io/etcd/v3/etcdctl/ctlv2"
+	"go.etcd.io/etcd/v3/etcdctl/ctlv3"
 )
 
-func main() {
-	app := cli.NewApp()
-	app.Name = "etcdctl"
-	app.Version = version.Version
-	app.Usage = "A simple command line client for etcd."
-	app.Flags = []cli.Flag{
-		cli.BoolFlag{Name: "debug", Usage: "output cURL commands which can be used to reproduce the request"},
-		cli.BoolFlag{Name: "no-sync", Usage: "don't synchronize cluster information before sending request"},
-		cli.StringFlag{Name: "output, o", Value: "simple", Usage: "output response in the given format (`simple` or `json`)"},
-		cli.StringFlag{Name: "peers, C", Value: "", Usage: "a comma-delimited list of machine addresses in the cluster (default: \"127.0.0.1:4001\")"},
-		cli.StringFlag{Name: "cert-file", Value: "", Usage: "identify HTTPS client using this SSL certificate file"},
-		cli.StringFlag{Name: "key-file", Value: "", Usage: "identify HTTPS client using this SSL key file"},
-		cli.StringFlag{Name: "ca-file", Value: "", Usage: "verify certificates of HTTPS-enabled servers using this CA bundle"},
-	}
-	app.Commands = []cli.Command{
-		command.NewBackupCommand(),
-		command.NewClusterHealthCommand(),
-		command.NewMakeCommand(),
-		command.NewMakeDirCommand(),
-		command.NewRemoveCommand(),
-		command.NewRemoveDirCommand(),
-		command.NewGetCommand(),
-		command.NewLsCommand(),
-		command.NewSetCommand(),
-		command.NewSetDirCommand(),
-		command.NewUpdateCommand(),
-		command.NewUpdateDirCommand(),
-		command.NewWatchCommand(),
-		command.NewExecWatchCommand(),
-		command.NewMemberCommand(),
-		command.UpgradeCommand(),
+const (
+	apiEnv = "ETCDCTL_API"
+)
+
+/**
+mainWithError is fully analogous to main, but instead of signaling errors
+by os.Exit, it exposes the error explicitly, such that test-logic can intercept
+control to e.g. dump coverage data (even for test-for-failure scenarios).
+*/
+func mainWithError() error {
+	apiv := os.Getenv(apiEnv)
+
+	// unset apiEnv to avoid side-effect for future env and flag parsing.
+	os.Unsetenv(apiEnv)
+
+	if len(apiv) == 0 || apiv == "3" {
+		return ctlv3.Start()
 	}
 
-	app.Run(os.Args)
+	if apiv == "2" {
+		return ctlv2.Start()
+	}
+
+	fmt.Fprintf(os.Stderr, "unsupported API version: %s\n", apiv)
+	return fmt.Errorf("unsupported API version: %s", apiv)
+}
+
+func main() {
+	apiv := os.Getenv(apiEnv)
+
+	// unset apiEnv to avoid side-effect for future env and flag parsing.
+	os.Unsetenv(apiEnv)
+	if len(apiv) == 0 || apiv == "3" {
+		ctlv3.MustStart()
+		return
+	}
+
+	if apiv == "2" {
+		ctlv2.MustStart()
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "unsupported API version: %v\n", apiv)
+	os.Exit(1)
 }

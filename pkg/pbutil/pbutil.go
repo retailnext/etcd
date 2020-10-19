@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package pbutil defines interfaces for handling Protocol Buffer objects.
 package pbutil
 
-import "log"
+import "fmt"
 
 type Marshaler interface {
 	Marshal() (data []byte, err error)
@@ -27,15 +28,22 @@ type Unmarshaler interface {
 func MustMarshal(m Marshaler) []byte {
 	d, err := m.Marshal()
 	if err != nil {
-		log.Panicf("marshal protobuf type should never fail: %v", err)
+		panic(fmt.Sprintf("marshal should never fail (%v)", err))
 	}
 	return d
 }
 
 func MustUnmarshal(um Unmarshaler, data []byte) {
 	if err := um.Unmarshal(data); err != nil {
-		log.Panicf("unmarshal protobuf type should never fail: %v", err)
+		panic(fmt.Sprintf("unmarshal should never fail (%v)", err))
 	}
+}
+
+func MaybeUnmarshal(um Unmarshaler, data []byte) bool {
+	if err := um.Unmarshal(data); err != nil {
+		return false
+	}
+	return true
 }
 
 func GetBool(v *bool) (vv bool, set bool) {

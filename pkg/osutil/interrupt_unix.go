@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,19 +14,19 @@
 
 // +build !windows,!plan9
 
-// InterruptHandler is a function that is called on receiving a
-// SIGTERM or SIGINT signal.
-
 package osutil
 
 import (
-	"log"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+
+	"go.uber.org/zap"
 )
 
+// InterruptHandler is a function that is called on receiving a
+// SIGTERM or SIGINT signal.
 type InterruptHandler func()
 
 var (
@@ -45,7 +45,7 @@ func RegisterInterruptHandler(h InterruptHandler) {
 }
 
 // HandleInterrupts calls the handler functions on receiving a SIGINT or SIGTERM.
-func HandleInterrupts() {
+func HandleInterrupts(lg *zap.Logger) {
 	notifier := make(chan os.Signal, 1)
 	signal.Notify(notifier, syscall.SIGINT, syscall.SIGTERM)
 
@@ -59,7 +59,9 @@ func HandleInterrupts() {
 
 		interruptExitMu.Lock()
 
-		log.Printf("received %v signal, shutting down...", sig)
+		if lg != nil {
+			lg.Info("received signal; shutting down", zap.String("signal", sig.String()))
+		}
 
 		for _, h := range ihs {
 			h()
@@ -70,6 +72,7 @@ func HandleInterrupts() {
 		if pid == 1 {
 			os.Exit(0)
 		}
+		setDflSignal(sig.(syscall.Signal))
 		syscall.Kill(pid, sig.(syscall.Signal))
 	}()
 }

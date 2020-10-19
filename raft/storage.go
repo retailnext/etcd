@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,21 +16,26 @@ package raft
 
 import (
 	"errors"
-	"log"
 	"sync"
 
-	pb "github.com/coreos/etcd/raft/raftpb"
+	pb "go.etcd.io/etcd/v3/raft/raftpb"
 )
 
 // ErrCompacted is returned by Storage.Entries/Compact when a requested
 // index is unavailable because it predates the last snapshot.
 var ErrCompacted = errors.New("requested index is unavailable due to compaction")
 
-// ErrOutOfDataSnap is returned by Storage.CreateSnapshot when a requested
+// ErrSnapOutOfDate is returned by Storage.CreateSnapshot when a requested
 // index is older than the existing snapshot.
 var ErrSnapOutOfDate = errors.New("requested index is older than the existing snapshot")
 
+// ErrUnavailable is returned by Storage interface when the requested log entries
+// are unavailable.
 var ErrUnavailable = errors.New("requested entry at index is unavailable")
+
+// ErrSnapshotTemporarilyUnavailable is returned by the Storage interface when the required
+// snapshot is temporarily unavailable.
+var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unavailable")
 
 // Storage is an interface that may be implemented by the application
 // to retrieve log entries from storage.
@@ -39,10 +44,14 @@ var ErrUnavailable = errors.New("requested entry at index is unavailable")
 // become inoperable and refuse to participate in elections; the
 // application is responsible for cleanup and recovery in this case.
 type Storage interface {
+	// TODO(tbg): split this into two interfaces, LogStorage and StateStorage.
+
 	// InitialState returns the saved HardState and ConfState information.
 	InitialState() (pb.HardState, pb.ConfState, error)
 	// Entries returns a slice of log entries in the range [lo,hi).
-	Entries(lo, hi uint64) ([]pb.Entry, error)
+	// MaxSize limits the total size of the log entries returned, but
+	// Entries returns at least one entry if any.
+	Entries(lo, hi, maxSize uint64) ([]pb.Entry, error)
 	// Term returns the term of entry i, which must be in the range
 	// [FirstIndex()-1, LastIndex()]. The term of the entry before
 	// FirstIndex is retained for matching purposes even though the
@@ -56,6 +65,9 @@ type Storage interface {
 	// first log entry is not available).
 	FirstIndex() (uint64, error)
 	// Snapshot returns the most recent snapshot.
+	// If snapshot is temporarily unavailable, it should return ErrSnapshotTemporarilyUnavailable,
+	// so raft state machine could know that Storage needs some time to prepare
+	// snapshot and call Snapshot later.
 	Snapshot() (pb.Snapshot, error)
 }
 
@@ -88,12 +100,14 @@ func (ms *MemoryStorage) InitialState() (pb.HardState, pb.ConfState, error) {
 
 // SetHardState saves the current HardState.
 func (ms *MemoryStorage) SetHardState(st pb.HardState) error {
+	ms.Lock()
+	defer ms.Unlock()
 	ms.hardState = st
 	return nil
 }
 
 // Entries implements the Storage interface.
-func (ms *MemoryStorage) Entries(lo, hi uint64) ([]pb.Entry, error) {
+func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	ms.Lock()
 	defer ms.Unlock()
 	offset := ms.ents[0].Index
@@ -101,13 +115,15 @@ func (ms *MemoryStorage) Entries(lo, hi uint64) ([]pb.Entry, error) {
 		return nil, ErrCompacted
 	}
 	if hi > ms.lastIndex()+1 {
-		log.Panicf("entries's hi(%d) is out of bound lastindex(%d)", hi, ms.lastIndex())
+		raftLogger.Panicf("entries' hi(%d) is out of bound lastindex(%d)", hi, ms.lastIndex())
 	}
 	// only contains dummy entries.
 	if len(ms.ents) == 1 {
 		return nil, ErrUnavailable
 	}
-	return ms.ents[lo-offset : hi-offset], nil
+
+	ents := ms.ents[lo-offset : hi-offset]
+	return limitSize(ents, maxSize), nil
 }
 
 // Term implements the Storage interface.
@@ -117,6 +133,9 @@ func (ms *MemoryStorage) Term(i uint64) (uint64, error) {
 	offset := ms.ents[0].Index
 	if i < offset {
 		return 0, ErrCompacted
+	}
+	if int(i-offset) >= len(ms.ents) {
+		return 0, ErrUnavailable
 	}
 	return ms.ents[i-offset].Term, nil
 }
@@ -156,13 +175,19 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	ms.Lock()
 	defer ms.Unlock()
 
-	// TODO: return snapOutOfDate?
+	//handle check for old snapshot being applied
+	msIndex := ms.snapshot.Metadata.Index
+	snapIndex := snap.Metadata.Index
+	if msIndex >= snapIndex {
+		return ErrSnapOutOfDate
+	}
+
 	ms.snapshot = snap
 	ms.ents = []pb.Entry{{Term: snap.Metadata.Term, Index: snap.Metadata.Index}}
 	return nil
 }
 
-// Creates a snapshot which can be retrieved with the Snapshot() method and
+// CreateSnapshot makes a snapshot which can be retrieved with Snapshot() and
 // can be used to reconstruct the state at that point.
 // If any configuration changes have been made since the last compaction,
 // the result of the last ApplyConfChange must be passed in.
@@ -175,7 +200,7 @@ func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte)
 
 	offset := ms.ents[0].Index
 	if i > ms.lastIndex() {
-		log.Panicf("snapshot %d is out of bound lastindex(%d)", i, ms.lastIndex())
+		raftLogger.Panicf("snapshot %d is out of bound lastindex(%d)", i, ms.lastIndex())
 	}
 
 	ms.snapshot.Metadata.Index = i
@@ -187,16 +212,18 @@ func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte)
 	return ms.snapshot, nil
 }
 
-// Compact discards all log entries prior to i.
+// Compact discards all log entries prior to compactIndex.
 // It is the application's responsibility to not attempt to compact an index
 // greater than raftLog.applied.
 func (ms *MemoryStorage) Compact(compactIndex uint64) error {
+	ms.Lock()
+	defer ms.Unlock()
 	offset := ms.ents[0].Index
 	if compactIndex <= offset {
 		return ErrCompacted
 	}
 	if compactIndex > ms.lastIndex() {
-		log.Panicf("compact %d is out of bound lastindex(%d)", compactIndex, ms.lastIndex())
+		raftLogger.Panicf("compact %d is out of bound lastindex(%d)", compactIndex, ms.lastIndex())
 	}
 
 	i := compactIndex - offset
@@ -212,12 +239,14 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 // TODO (xiangli): ensure the entries are continuous and
 // entries[0].Index > ms.entries[0].Index
 func (ms *MemoryStorage) Append(entries []pb.Entry) error {
-	ms.Lock()
-	defer ms.Unlock()
 	if len(entries) == 0 {
 		return nil
 	}
-	first := ms.ents[0].Index + 1
+
+	ms.Lock()
+	defer ms.Unlock()
+
+	first := ms.firstIndex()
 	last := entries[0].Index + uint64(len(entries)) - 1
 
 	// shortcut if there is no new entry.
@@ -237,7 +266,7 @@ func (ms *MemoryStorage) Append(entries []pb.Entry) error {
 	case uint64(len(ms.ents)) == offset:
 		ms.ents = append(ms.ents, entries...)
 	default:
-		log.Panicf("missing log entry [last: %d, append at: %d]",
+		raftLogger.Panicf("missing log entry [last: %d, append at: %d]",
 			ms.lastIndex(), entries[0].Index)
 	}
 	return nil

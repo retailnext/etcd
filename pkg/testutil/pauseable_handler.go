@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,12 +35,10 @@ func (ph *PauseableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		hj, ok := w.(http.Hijacker)
 		if !ok {
 			panic("webserver doesn't support hijacking")
-			return
 		}
 		conn, _, err := hj.Hijack()
 		if err != nil {
 			panic(err.Error())
-			return
 		}
 		conn.Close()
 	}

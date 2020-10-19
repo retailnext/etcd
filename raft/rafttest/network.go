@@ -1,3 +1,17 @@
+// Copyright 2015 The etcd Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package rafttest
 
 import (
@@ -5,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coreos/etcd/raft/raftpb"
+	"go.etcd.io/etcd/v3/raft/raftpb"
 )
 
 // a network interface
@@ -16,20 +30,8 @@ type iface interface {
 	connect()
 }
 
-// a network
-type network interface {
-	// drop message at given rate (1.0 drops all messages)
-	drop(from, to uint64, rate float64)
-	// delay message for (0, d] randomly at given rate (1.0 delay all messages)
-	// do we need rate here?
-	delay(from, to uint64, d time.Duration, rate float64)
-	disconnect(id uint64)
-	connect(id uint64)
-	// heal heals the network
-	heal()
-}
-
 type raftNetwork struct {
+	rand         *rand.Rand
 	mu           sync.Mutex
 	disconnected map[uint64]bool
 	dropmap      map[conn]float64
@@ -48,6 +50,7 @@ type delay struct {
 
 func newRaftNetwork(nodes ...uint64) *raftNetwork {
 	pn := &raftNetwork{
+		rand:         rand.New(rand.NewSource(1)),
 		recvQueues:   make(map[uint64]chan raftpb.Message),
 		dropmap:      make(map[conn]float64),
 		delaymap:     make(map[conn]delay),
@@ -71,23 +74,35 @@ func (rn *raftNetwork) send(m raftpb.Message) {
 		to = nil
 	}
 	drop := rn.dropmap[conn{m.From, m.To}]
-	delay := rn.delaymap[conn{m.From, m.To}]
+	dl := rn.delaymap[conn{m.From, m.To}]
 	rn.mu.Unlock()
 
 	if to == nil {
 		return
 	}
-	if drop != 0 && rand.Float64() < drop {
+	if drop != 0 && rn.rand.Float64() < drop {
 		return
 	}
-	// TODO: shall we delay without blocking the send call?
-	if delay.d != 0 && rand.Float64() < delay.rate {
-		rd := rand.Int63n(int64(delay.d))
+	// TODO: shall we dl without blocking the send call?
+	if dl.d != 0 && rn.rand.Float64() < dl.rate {
+		rd := rn.rand.Int63n(int64(dl.d))
 		time.Sleep(time.Duration(rd))
 	}
 
+	// use marshal/unmarshal to copy message to avoid data race.
+	b, err := m.Marshal()
+	if err != nil {
+		panic(err)
+	}
+
+	var cm raftpb.Message
+	err = cm.Unmarshal(b)
+	if err != nil {
+		panic(err)
+	}
+
 	select {
-	case to <- m:
+	case to <- cm:
 	default:
 		// drop messages when the receiver queue is full.
 	}
@@ -114,13 +129,6 @@ func (rn *raftNetwork) delay(from, to uint64, d time.Duration, rate float64) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 	rn.delaymap[conn{from, to}] = delay{d, rate}
-}
-
-func (rn *raftNetwork) heal() {
-	rn.mu.Lock()
-	defer rn.mu.Unlock()
-	rn.dropmap = make(map[conn]float64)
-	rn.delaymap = make(map[conn]delay)
 }
 
 func (rn *raftNetwork) disconnect(id uint64) {

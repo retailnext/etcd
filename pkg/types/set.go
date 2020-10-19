@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -61,7 +61,7 @@ func (us *unsafeSet) Remove(value string) {
 // Contains returns whether the set contains the given value
 func (us *unsafeSet) Contains(value string) (exists bool) {
 	_, exists = us.d[value]
-	return
+	return exists
 }
 
 // ContainsAll returns whether the set contains all given values
@@ -91,16 +91,16 @@ func (us *unsafeSet) Length() int {
 // Values returns the values of the Set in an unspecified order.
 func (us *unsafeSet) Values() (values []string) {
 	values = make([]string, 0)
-	for val, _ := range us.d {
+	for val := range us.d {
 		values = append(values, val)
 	}
-	return
+	return values
 }
 
 // Copy creates a new Set containing the values of the first
 func (us *unsafeSet) Copy() Set {
 	cp := NewUnsafeSet()
-	for val, _ := range us.d {
+	for val := range us.d {
 		cp.Add(val)
 	}
 
@@ -148,6 +148,14 @@ func (ts *tsafeSet) Contains(value string) (exists bool) {
 func (ts *tsafeSet) Equals(other Set) bool {
 	ts.m.RLock()
 	defer ts.m.RUnlock()
+
+	// If ts and other represent the same variable, avoid calling
+	// ts.us.Equals(other), to avoid double RLock bug
+	if _other, ok := other.(*tsafeSet); ok {
+		if _other == ts {
+			return true
+		}
+	}
 	return ts.us.Equals(other)
 }
 
@@ -173,6 +181,15 @@ func (ts *tsafeSet) Copy() Set {
 func (ts *tsafeSet) Sub(other Set) Set {
 	ts.m.RLock()
 	defer ts.m.RUnlock()
+
+	// If ts and other represent the same variable, avoid calling
+	// ts.us.Sub(other), to avoid double RLock bug
+	if _other, ok := other.(*tsafeSet); ok {
+		if _other == ts {
+			usResult := NewUnsafeSet()
+			return &tsafeSet{usResult, sync.RWMutex{}}
+		}
+	}
 	usResult := ts.us.Sub(other).(*unsafeSet)
 	return &tsafeSet{usResult, sync.RWMutex{}}
 }
